@@ -1,0 +1,20 @@
+[project]
+name = "pi-memora-bridge"
+version = "1.0.0"
+description = "Python bridge runner metadata for the pi-memora extension."
+requires-python = ">=3.10"
+dependencies = [
+  "pydantic",
+  "openai",
+  "azure-identity",
+  "omegaconf",
+  "chromadb",
+  "numpy",
+  "rank-bm25",
+  "tiktoken",
+  "markdownify",
+  "requests",
+]
+
+[tool.uv]
+package = false
