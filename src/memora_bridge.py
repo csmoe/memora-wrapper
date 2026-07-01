@@ -4,9 +4,9 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
-from pathlib import Path
 
 
 ACTION_TO_TOOL = {
@@ -33,11 +33,9 @@ def main() -> None:
         print(json.dumps({"ok": False, "error": f"Unknown action: {action}"}))
         raise SystemExit(1)
 
-    project_root = Path(__file__).resolve().parent.parent
-    caller = project_root / "src" / "memora_mcp_call.py"
     completed = subprocess.run(
-        ["uv", "run", "--project", str(project_root), "python", str(caller), tool_name, _payload()],
-        cwd=project_root,
+        [sys.executable, "-m", "memora_mcp_call", tool_name, _payload()],
+        cwd=os.getcwd(),
         text=True,
         check=False,
     )

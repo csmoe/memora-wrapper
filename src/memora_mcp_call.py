@@ -7,7 +7,6 @@ import asyncio
 import json
 import os
 import sys
-from pathlib import Path
 from typing import Any
 
 from mcp import ClientSession, StdioServerParameters
@@ -50,12 +49,10 @@ def _decode_tool_result(result: Any) -> dict[str, Any]:
 
 
 async def _call_tool(tool_name: str, payload: dict[str, Any]) -> dict[str, Any]:
-    project_root = Path(__file__).resolve().parent.parent
-    server_path = project_root / "src" / "memora_mcp.py"
     params = StdioServerParameters(
-        command="uv",
-        args=["run", "--project", str(project_root), "python", str(server_path)],
-        cwd=str(project_root),
+        command=sys.executable,
+        args=["-m", "memora_mcp"],
+        cwd=os.getcwd(),
         env=dict(os.environ),
     )
     async with stdio_client(params) as (read, write):

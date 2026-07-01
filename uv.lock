@@ -1309,8 +1309,8 @@ wheels = [
 
 [[package]]
 name = "memora-wrapper"
-version = "1.0.0"
-source = { virtual = "." }
+version = "1.0.4"
+source = { editable = "." }
 dependencies = [
     { name = "azure-identity" },
     { name = "chromadb" },

@@ -2,12 +2,13 @@
 
 Persistent memory for [Pi](https://pi.dev) and Codex-compatible MCP clients, backed by [Microsoft Memora](https://github.com/microsoft/Memora).
 
-`memora-wrapper` exposes one Python MCP server and uses it everywhere. The Pi extension calls the MCP tools through a local stdio MCP client shim; Codex can connect to the same MCP server directly. OpenAI chat models use native structured parsing; DeepSeek and other OpenAI-compatible chat providers use JSON mode with schema validation.
+`memora-wrapper` exposes one Python MCP server and uses it everywhere. Pi can use that server through `pi-mcp-extension`; Codex can connect to the same MCP server directly. The bundled `pi-memora` extension remains available for Pi-specific automatic recall and capture hooks. OpenAI chat models use native structured parsing; DeepSeek and other OpenAI-compatible chat providers use JSON mode with schema validation.
 
 ## What It Adds
 
-- MCP server: `src/memora_mcp.py`.
-- Pi extension commands: `/memora status`, `/memora setup`, `/memora recall`, `/memora remember`, `/memora list`, and `/memora clear`.
+- MCP server: `memora-mcp` / `src/memora_mcp.py`.
+- MCP tools for Pi and Codex: `memora_status`, `memora_setup_instructions`, `memora_remember`, `memora_recall`, `memora_list`, `memora_delete`, and `memora_clear`.
+- Optional Pi extension commands: `/memora status`, `/memora setup`, `/memora recall`, `/memora remember`, `/memora list`, and `/memora clear`.
 - `memora_remember` tool for durable facts, decisions, preferences, and task outcomes.
 - `memora_recall` tool for semantic memory lookup.
 - `memora_list` tool for inspecting stored memories.
@@ -15,9 +16,57 @@ Persistent memory for [Pi](https://pi.dev) and Codex-compatible MCP clients, bac
 - Optional automatic recall before each prompt.
 - Optional automatic capture after each agent run.
 
-The MCP runtime is a uv project. Its Python dependencies live in `pyproject.toml`; it does not install Memora's full benchmark, RL, or local-Hugging-Face dependency set.
+The MCP runtime is a uv-installable Python project. Its dependencies live in `pyproject.toml`; it does not install Memora's full benchmark, RL, or local-Hugging-Face dependency set.
 
-## Install
+## Pi MCP Install
+
+Pi does not ship built-in MCP support. Install the community MCP bridge extension first:
+
+```bash
+pi install npm:pi-mcp-extension
+```
+
+Create `~/.pi/agent/mcp.json` for global use, or `.pi/mcp.json` inside a project:
+
+```json
+{
+  "mcpServers": {
+    "memora": {
+      "transport": "stdio",
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/csmoe/memora-wrapper.git",
+        "memora-mcp"
+      ],
+      "lifecycle": "eager"
+    }
+  }
+}
+```
+
+For local development, replace the git URL with the checkout path:
+
+```json
+{
+  "mcpServers": {
+    "memora": {
+      "transport": "stdio",
+      "command": "uvx",
+      "args": ["--from", "/path/to/memora-wrapper", "memora-mcp"],
+      "lifecycle": "eager"
+    }
+  }
+}
+```
+
+Restart Pi or run `/reload`, then run `/mcp memora`. With the default `pi-mcp-extension` prefix, the tools appear as `mcp_memora_memora_status`, `mcp_memora_memora_remember`, `mcp_memora_memora_recall`, and so on.
+
+MCP-only Pi mode gives the model callable memory tools. It does not automatically inject recalled memories before each prompt or capture the conversation after each agent run because MCP tools do not receive Pi lifecycle events.
+
+## Pi Extension Install
+
+Use the Pi extension only when you want `/memora` commands plus automatic recall/capture through Pi's `before_agent_start` and `agent_end` events.
 
 Global install:
 
@@ -53,8 +102,8 @@ Configure Codex with an MCP server that launches this package:
 
 ```toml
 [mcp_servers.memora-wrapper]
-command = "uv"
-args = ["run", "--project", "/path/to/memora-wrapper", "python", "/path/to/memora-wrapper/src/memora_mcp.py"]
+command = "uvx"
+args = ["--from", "git+https://github.com/csmoe/memora-wrapper.git", "memora-mcp"]
 ```
 
 The server exposes `memora_status`, `memora_setup_instructions`, `memora_remember`, `memora_recall`, `memora_list`, `memora_delete`, and `memora_clear`.
@@ -76,10 +125,10 @@ Then start Pi or the MCP server from that shell:
 ```bash
 pi
 # or
-uv run --project /path/to/memora-wrapper python /path/to/memora-wrapper/src/memora_mcp.py
+uvx --from git+https://github.com/csmoe/memora-wrapper.git memora-mcp
 ```
 
-After Pi starts, run:
+After Pi starts with the native extension, run:
 
 ```text
 /memora setup
@@ -116,6 +165,16 @@ export AZURE_OPENAI_EMBEDDING_DEPLOYMENT=text-embedding-3-small
 ```
 
 ## Pi Usage
+
+MCP mode through `pi-mcp-extension`:
+
+```text
+/mcp memora
+Ask Pi to call mcp_memora_memora_remember for durable facts.
+Ask Pi to call mcp_memora_memora_recall before work that needs stored context.
+```
+
+Native extension mode:
 
 ```text
 /memora status

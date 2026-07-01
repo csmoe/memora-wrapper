@@ -1,6 +1,6 @@
 [project]
 name = "memora-wrapper"
-version = "1.0.0"
+version = "1.0.4"
 description = "Python MCP runtime for the memora-wrapper Pi and Codex integration."
 requires-python = ">=3.10"
 dependencies = [
@@ -17,5 +17,34 @@ dependencies = [
   "mcp",
 ]
 
-[tool.uv]
-package = false
+[project.scripts]
+memora-mcp = "memora_mcp:main"
+memora-mcp-call = "memora_mcp_call:main"
+memora-bridge = "memora_bridge:main"
+
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = [
+  "memora_bridge",
+  "memora_core",
+  "memora_mcp",
+  "memora_mcp_call",
+]
+packages = [
+  "memora",
+  "memora.builder",
+  "memora.browser",
+  "memora.core",
+  "memora.db_clients",
+  "memora.processors",
+  "memora.retriever",
+  "memora.rl",
+  "memora.utils",
+]
+
+[tool.setuptools.package-dir]
+"" = "src"
+"memora" = "vendor/Memora/src/memora"
