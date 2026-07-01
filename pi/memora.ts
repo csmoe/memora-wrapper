@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { formatSize, truncateHead, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -28,12 +28,11 @@ type MemoryEntry = {
 
 const here = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(here, "..");
-const bridgePath = resolve(packageRoot, "bridge", "pi_memora_bridge.py");
+const mcpCallPath = resolve(packageRoot, "src", "memora_mcp_call.py");
 const defaultDataHome = process.env.XDG_DATA_HOME || `${process.env.HOME || ""}/.local/share`;
-const memoraHome = process.env.PI_MEMORA_HOME || `${defaultDataHome}/pi-memora`;
+const memoraHome = process.env.PI_MEMORA_HOME || `${defaultDataHome}/memora-wrapper`;
 const memoraRepo = resolve(packageRoot, "vendor", "Memora");
 const memoraSrc = `${memoraRepo}/src`;
-const defaultMemoraRef = "dec3f8f2444eace7004fc084abe1be9f3d88270e";
 
 const maxRecallChars = 8000;
 const maxCaptureChars = 12000;
@@ -129,12 +128,8 @@ function toolErrorText(result: BridgeResult): string {
 
 function setupCommands(): string[] {
   return [
-    `MEMORA_REPO="${memoraRepo}"`,
-    "mkdir -p \"$(dirname \"$MEMORA_REPO\")\"",
-    "git init \"$MEMORA_REPO\"",
-    "git -C \"$MEMORA_REPO\" remote add origin https://github.com/microsoft/Memora.git",
-    `git -C "$MEMORA_REPO" fetch --depth 1 origin ${defaultMemoraRef}`,
-    "git -C \"$MEMORA_REPO\" checkout --detach FETCH_HEAD",
+    `test -d "${memoraSrc}"`,
+    `uv sync --project "${packageRoot}"`,
     `uv run --project "${packageRoot}" python -c "import sys; print(sys.version)"`,
   ];
 }
@@ -156,33 +151,17 @@ function runCommand(command: string, args: string[], options: { cwd?: string } =
   });
 }
 
-function isEmptyDir(path: string): boolean {
-  try {
-    return readdirSync(path).length === 0;
-  } catch {
-    return false;
-  }
-}
-
 async function runSetup(): Promise<BridgeResult> {
-  const parent = dirname(memoraRepo);
-  const existing = existsSync(memoraRepo);
-  const gitDir = resolve(memoraRepo, ".git");
-  if (existing && !existsSync(gitDir) && !isEmptyDir(memoraRepo)) {
+  if (!existsSync(memoraSrc)) {
     return {
       ok: false,
-      error: `Refusing to modify non-git non-empty directory: ${memoraRepo}`,
+      error: `Bundled Memora source is missing at ${memoraSrc}. Reinstall pi-memora or use a checkout that includes vendor/Memora/src.`,
       setup: setupCommands(),
     };
   }
 
   const steps: Array<[string, string[]]> = [
-    ["mkdir", ["-p", parent]],
-    ["git", ["init", memoraRepo]],
-    ["git", ["-C", memoraRepo, "remote", "remove", "origin"]],
-    ["git", ["-C", memoraRepo, "remote", "add", "origin", "https://github.com/microsoft/Memora.git"]],
-    ["git", ["-C", memoraRepo, "fetch", "--depth", "1", "origin", defaultMemoraRef]],
-    ["git", ["-C", memoraRepo, "checkout", "--detach", "FETCH_HEAD"]],
+    ["uv", ["sync", "--project", packageRoot]],
     ["uv", ["run", "--project", packageRoot, "python", "-c", "import sys; print(sys.version)"]],
   ];
 
@@ -190,7 +169,7 @@ async function runSetup(): Promise<BridgeResult> {
   for (const [command, args] of steps) {
     const label = `${command} ${args.join(" ")}`;
     const result = await runCommand(command, args);
-    if (!result.ok && !(command === "git" && args.includes("remove"))) {
+    if (!result.ok) {
       return {
         ok: false,
         error: `Setup failed while running: ${label}`,
@@ -207,7 +186,7 @@ async function runSetup(): Promise<BridgeResult> {
   };
 }
 
-function bridgeProcess(action: string, payload: Record<string, unknown>, extraEnv: NodeJS.ProcessEnv = {}): { command: string; args: string[]; env: NodeJS.ProcessEnv } {
+function mcpProcess(toolName: string, payload: Record<string, unknown>, extraEnv: NodeJS.ProcessEnv = {}): { command: string; args: string[]; env: NodeJS.ProcessEnv } {
   const env: NodeJS.ProcessEnv = { ...process.env, ...extraEnv };
   if (existsSync(memoraSrc)) {
     env.PYTHONPATH = env.PYTHONPATH ? `${memoraSrc}:${env.PYTHONPATH}` : memoraSrc;
@@ -216,15 +195,15 @@ function bridgeProcess(action: string, payload: Record<string, unknown>, extraEn
   if (!existsSync(memoraSrc)) {
     return {
       command: "python3",
-      args: [bridgePath, "missing-setup", JSON.stringify(payload)],
+      args: [mcpCallPath, "memora_setup_instructions", JSON.stringify(payload)],
       env,
     };
   }
 
-  return { command: "uv", args: ["run", "--project", packageRoot, "python", bridgePath, action, JSON.stringify(payload)], env };
+  return { command: "uv", args: ["run", "--project", packageRoot, "python", mcpCallPath, toolName, JSON.stringify(payload)], env };
 }
 
-function parseBridgeOutput(stdout: string, stderr: string): BridgeResult {
+function parseMcpOutput(stdout: string, stderr: string): BridgeResult {
   const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   for (let index = lines.length - 1; index >= 0; index -= 1) {
     const line = lines[index];
@@ -237,13 +216,13 @@ function parseBridgeOutput(stdout: string, stderr: string): BridgeResult {
       // Continue scanning earlier lines.
     }
   }
-  return { ok: false, error: "Memora bridge returned no JSON result.", detail: `${stdout}\n${stderr}`.trim() };
+  return { ok: false, error: "Memora MCP call returned no JSON result.", detail: `${stdout}\n${stderr}`.trim() };
 }
 
-function runBridge(action: string, payload: Record<string, unknown>, signal?: AbortSignal, extraEnv?: NodeJS.ProcessEnv): Promise<BridgeResult> {
+function runMcpTool(toolName: string, payload: Record<string, unknown>, signal?: AbortSignal, extraEnv?: NodeJS.ProcessEnv): Promise<BridgeResult> {
   return new Promise((resolvePromise) => {
-    if (!existsSync(bridgePath)) {
-      resolvePromise({ ok: false, error: `Bridge not found at ${bridgePath}` });
+    if (!existsSync(mcpCallPath)) {
+      resolvePromise({ ok: false, error: `MCP caller not found at ${mcpCallPath}` });
       return;
     }
 
@@ -254,7 +233,7 @@ function runBridge(action: string, payload: Record<string, unknown>, signal?: Ab
       resolvePromise(result);
     };
 
-    const runner = bridgeProcess(action, payload, extraEnv);
+    const runner = mcpProcess(toolName, payload, extraEnv);
     const child = spawn(runner.command, runner.args, {
       cwd: packageRoot,
       env: runner.env,
@@ -279,7 +258,7 @@ function runBridge(action: string, payload: Record<string, unknown>, signal?: Ab
     });
     child.on("close", () => {
       clearTimeout(timeout);
-      resolveOnce(parseBridgeOutput(stdout, stderr));
+      resolveOnce(parseMcpOutput(stdout, stderr));
     });
   });
 }
@@ -330,11 +309,11 @@ export default function memoraExtension(pi: ExtensionAPI) {
       }
 
       if (command === "setup") {
-        ctx.ui.notify("Setting up Memora runtime under vendor/Memora...", "info");
+        ctx.ui.notify("Setting up pi-memora uv runtime...", "info");
         const result = await runSetup();
         ctx.ui.notify(
           result.ok
-            ? `Memora runtime is ready at ${memoraRepo}.`
+            ? `Memora runtime is ready. Bundled source: ${memoraSrc}.`
             : setupText(result),
           result.ok ? "info" : "error",
         );
@@ -342,31 +321,31 @@ export default function memoraExtension(pi: ExtensionAPI) {
       }
 
       if (command === "recall") {
-        const result = await runBridge("query", { ...basePayload(ctx), query: text, top_k: topK }, ctx.signal, await piModelEnv(ctx));
+        const result = await runMcpTool("memora_recall", { ...basePayload(ctx), query: text, top_k: topK }, ctx.signal, await piModelEnv(ctx));
         ctx.ui.notify(result.ok ? formatEntries(result.entries) : setupText(result), result.ok ? "info" : "error");
         return;
       }
 
       if (command === "remember") {
-        const result = await runBridge("add", { ...basePayload(ctx), text, type: "doc" }, ctx.signal, await piModelEnv(ctx));
+        const result = await runMcpTool("memora_remember", { ...basePayload(ctx), text, memory_type: "doc" }, ctx.signal, await piModelEnv(ctx));
         ctx.ui.notify(result.ok ? `Stored ${result.stored ?? 0} Memora entr${result.stored === 1 ? "y" : "ies"}.` : setupText(result), result.ok ? "info" : "error");
         return;
       }
 
       if (command === "list") {
         const limit = Number(rest[0]) || 20;
-        const result = await runBridge("list", { ...basePayload(ctx), limit }, ctx.signal, await piModelEnv(ctx));
+        const result = await runMcpTool("memora_list", { ...basePayload(ctx), limit }, ctx.signal, await piModelEnv(ctx));
         ctx.ui.notify(result.ok ? formatEntries(result.entries) : setupText(result), result.ok ? "info" : "error");
         return;
       }
 
       if (command === "clear") {
-        const result = await runBridge("clear", { ...basePayload(ctx), confirm: rest[0] }, ctx.signal, await piModelEnv(ctx));
+        const result = await runMcpTool("memora_clear", { ...basePayload(ctx), confirm: rest[0] }, ctx.signal, await piModelEnv(ctx));
         ctx.ui.notify(result.ok ? "Cleared Memora memory for this scope." : setupText(result), result.ok ? "info" : "error");
         return;
       }
 
-      const result = await runBridge("doctor", basePayload(ctx), ctx.signal, await piModelEnv(ctx));
+      const result = await runMcpTool("memora_status", basePayload(ctx), ctx.signal, await piModelEnv(ctx));
       ctx.ui.notify(
         result.ok
           ? `Memora ready. Scope ${result.user_id}; ${result.count ?? 0} memories; home ${result.home}.`
@@ -390,7 +369,7 @@ export default function memoraExtension(pi: ExtensionAPI) {
       type: Type.Optional(Type.String({ description: "Memora memory type, defaults to doc." })),
     }),
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const result = await runBridge("add", { ...basePayload(ctx), text: params.text, type: params.type || "doc" }, signal, await piModelEnv(ctx));
+      const result = await runMcpTool("memora_remember", { ...basePayload(ctx), text: params.text, memory_type: params.type || "doc" }, signal, await piModelEnv(ctx));
       return {
         isError: !result.ok,
         content: [{ type: "text", text: result.ok ? `Stored ${result.stored ?? 0} Memora entries.` : toolErrorText(result) }],
@@ -412,7 +391,7 @@ export default function memoraExtension(pi: ExtensionAPI) {
       top_k: Type.Optional(Type.Number({ description: "Maximum memories to return." })),
     }),
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const result = await runBridge("query", { ...basePayload(ctx), query: params.query, top_k: params.top_k || topK }, signal, await piModelEnv(ctx));
+      const result = await runMcpTool("memora_recall", { ...basePayload(ctx), query: params.query, top_k: params.top_k || topK }, signal, await piModelEnv(ctx));
       return {
         isError: !result.ok,
         content: [{ type: "text", text: result.ok ? formatEntries(result.entries) : toolErrorText(result) }],
@@ -429,7 +408,7 @@ export default function memoraExtension(pi: ExtensionAPI) {
       limit: Type.Optional(Type.Number({ description: "Maximum memories to list." })),
     }),
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const result = await runBridge("list", { ...basePayload(ctx), limit: params.limit || 20 }, signal, await piModelEnv(ctx));
+      const result = await runMcpTool("memora_list", { ...basePayload(ctx), limit: params.limit || 20 }, signal, await piModelEnv(ctx));
       return {
         isError: !result.ok,
         content: [{ type: "text", text: result.ok ? formatEntries(result.entries) : toolErrorText(result) }],
@@ -442,7 +421,7 @@ export default function memoraExtension(pi: ExtensionAPI) {
     if (!boolEnv("PI_MEMORA_AUTORECALL", true)) return;
     const prompt = String(event.prompt || "").trim();
     if (!prompt) return;
-    const result = await runBridge("query", { ...basePayload(ctx), query: prompt, top_k: topK }, ctx.signal, await piModelEnv(ctx));
+    const result = await runMcpTool("memora_recall", { ...basePayload(ctx), query: prompt, top_k: topK }, ctx.signal, await piModelEnv(ctx));
     if (!result.ok || !result.entries?.length) return;
     const memories = formatEntries(result.entries);
     return {
@@ -454,10 +433,10 @@ export default function memoraExtension(pi: ExtensionAPI) {
     if (!boolEnv("PI_MEMORA_AUTOCAPTURE", true)) return;
     const transcript = summarizeMessages((event as { messages?: unknown }).messages);
     if (transcript.length < minCaptureChars) return;
-    await runBridge("add", {
+    await runMcpTool("memora_remember", {
       ...basePayload(ctx),
       text: transcript,
-      type: "doc",
+      memory_type: "doc",
       metadata: { captured_at: new Date().toISOString(), capture: "agent_end" },
     }, ctx.signal, await piModelEnv(ctx));
   });

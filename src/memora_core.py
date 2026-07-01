@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""JSON CLI bridge between a Pi TypeScript extension and Microsoft Memora."""
+"""Shared Microsoft Memora integration for Pi and MCP entrypoints."""
 
 from __future__ import annotations
 
@@ -16,32 +16,13 @@ from typing import Any
 STRUCTURED_OUTPUT_RETRIES = 2
 
 
-def _json_out(payload: dict[str, Any], code: int = 0) -> None:
-    print(json.dumps(payload, ensure_ascii=False))
-    raise SystemExit(code)
-
-
-def _read_payload() -> dict[str, Any]:
-    if len(sys.argv) >= 3:
-        raw = sys.argv[2]
-    else:
-        raw = sys.stdin.read()
-    if not raw.strip():
-        return {}
-    return json.loads(raw)
-
-
 def _setup_commands() -> list[str]:
     project_root = Path(__file__).resolve().parent.parent
     memora_repo = project_root / "vendor" / "Memora"
-    memora_ref = "dec3f8f2444eace7004fc084abe1be9f3d88270e"
+    memora_src = memora_repo / "src"
     return [
-        f"MEMORA_REPO=\"{memora_repo}\"",
-        "mkdir -p \"$(dirname \"$MEMORA_REPO\")\"",
-        "git init \"$MEMORA_REPO\"",
-        "git -C \"$MEMORA_REPO\" remote add origin https://github.com/microsoft/Memora.git",
-        f"git -C \"$MEMORA_REPO\" fetch --depth 1 origin {memora_ref}",
-        "git -C \"$MEMORA_REPO\" checkout --detach FETCH_HEAD",
+        f"test -d \"{memora_src}\"",
+        f"uv sync --project \"{project_root}\"",
         f"uv run --project \"{project_root}\" python -c \"import sys; print(sys.version)\"",
     ]
 
@@ -177,9 +158,7 @@ def _apply_openai_compat_patches() -> None:
     import memora.utils.llm as llm_utils
 
     def get_openai_chat_completion_client(cfg):
-        api_key = cfg.openai.get("api_key", None) or _openai_compat_api_key("LLM")
-        if not api_key:
-            raise ValueError("OpenAI-compatible chat API key is missing.")
+        api_key = cfg.openai.get("api_key", None) or _openai_compat_api_key("LLM") or "pi-memora-status-placeholder"
         kwargs: dict[str, str] = {"api_key": api_key}
         base_url = cfg.openai.get("llm_api_base", None) or _openai_compat_base_url("LLM")
         if base_url:
@@ -187,9 +166,7 @@ def _apply_openai_compat_patches() -> None:
         return OpenAI(**kwargs)
 
     def get_openai_embedding_client(cfg):
-        api_key = cfg.openai.get("embedding_api_key", None) or _openai_compat_api_key("EMBEDDING")
-        if not api_key:
-            raise ValueError("OpenAI-compatible embedding API key is missing.")
+        api_key = cfg.openai.get("embedding_api_key", None) or _openai_compat_api_key("EMBEDDING") or "pi-memora-status-placeholder"
         kwargs: dict[str, str] = {"api_key": api_key}
         base_url = cfg.openai.get("embedding_api_base", None) or _openai_compat_base_url("EMBEDDING")
         if base_url:
@@ -315,15 +292,7 @@ class _UnavailableOptionalDependency:
 
 def _memora_imports():
     if sys.version_info < (3, 10):
-        _json_out(
-            {
-                "ok": False,
-                "error": "Memora requires Python 3.10 or newer.",
-                "detail": f"Current Python is {sys.version.split()[0]} at {sys.executable}",
-                "setup": _setup_commands(),
-            },
-            code=2,
-        )
+        raise RuntimeError(f"Memora requires Python 3.10 or newer. Current Python is {sys.version.split()[0]} at {sys.executable}")
     try:
         _add_default_memora_checkout_to_path()
         _install_optional_dependency_shims()
@@ -331,15 +300,7 @@ def _memora_imports():
         from memora.memora_client import MemoraClient
         from omegaconf import OmegaConf
     except Exception as exc:  # pragma: no cover - environment dependent
-        _json_out(
-            {
-                "ok": False,
-                "error": "Memora is not importable in this Python environment.",
-                "detail": str(exc),
-                "setup": _setup_commands(),
-            },
-            code=2,
-        )
+        raise RuntimeError(f"Memora is not importable in this Python environment: {exc}") from exc
     return MemoraClient, OmegaConf
 
 
@@ -349,8 +310,8 @@ def _default_home() -> Path:
         return Path(configured).expanduser()
     data_home = os.getenv("XDG_DATA_HOME")
     if data_home:
-        return Path(data_home).expanduser() / "pi-memora"
-    return Path.home() / ".local" / "share" / "pi-memora"
+        return Path(data_home).expanduser() / "memora-wrapper"
+    return Path.home() / ".local" / "share" / "memora-wrapper"
 
 
 def _scope_id(payload: dict[str, Any]) -> str:
@@ -368,9 +329,7 @@ def _cfg(payload: dict[str, Any]):
     store = home / "store"
     store.mkdir(parents=True, exist_ok=True)
 
-    api_type = os.getenv("OPENAI_API_TYPE")
-    if not api_type:
-        api_type = "openai" if os.getenv("OPENAI_API_KEY") else "azure"
+    api_type = os.getenv("OPENAI_API_TYPE", "openai")
 
     model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
     embedding_model = os.getenv("PI_MEMORA_EMBEDDING_MODEL", os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"))
@@ -388,8 +347,8 @@ def _cfg(payload: dict[str, Any]):
                 "embedding_api_version": os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview"),
                 "embedding_deployment_name": os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", embedding_model),
                 "managed_identity": os.getenv("AZURE_MANAGED_IDENTITY_CLIENT_ID"),
-                "api_key": _openai_compat_api_key("LLM"),
-                "embedding_api_key": _openai_compat_api_key("EMBEDDING"),
+                "api_key": _openai_compat_api_key("LLM") or "pi-memora-status-placeholder",
+                "embedding_api_key": _openai_compat_api_key("EMBEDDING") or "pi-memora-status-placeholder",
                 "embedding_model": embedding_model,
                 "model": model,
             },
@@ -445,77 +404,80 @@ def _metadata(payload: dict[str, Any]) -> dict[str, Any]:
     return metadata
 
 
-def main() -> None:
-    action = sys.argv[1] if len(sys.argv) >= 2 else "doctor"
-    payload = _read_payload()
-
-    try:
-        if action == "missing-setup":
-            _json_out(
-                {
-                    "ok": False,
-                    "error": "Memora checkout is missing or incomplete.",
-                    "setup": _setup_commands(),
-                },
-                code=2,
-            )
-
-        if action == "doctor":
-            client = _client(payload)
-            _json_out(
-                {
-                    "ok": True,
-                    "user_id": _scope_id(payload),
-                    "count": client.count(),
-                    "home": str(_default_home()),
-                }
-            )
-
-        if action == "add":
-            text = str(payload.get("text") or "").strip()
-            if not text:
-                _json_out({"ok": False, "error": "No text provided."}, code=1)
-            entries = _client(payload).add(text, type=str(payload.get("type") or "doc"), metadata=_metadata(payload))
-            _json_out({"ok": True, "stored": len(entries), "entries": [_entry_to_dict(e) for e in entries]})
-
-        if action == "query":
-            query = str(payload.get("query") or "").strip()
-            if not query:
-                _json_out({"ok": False, "error": "No query provided."}, code=1)
-            top_k = int(payload.get("top_k") or os.getenv("PI_MEMORA_TOP_K", "5"))
-            strategy = str(payload.get("strategy") or "semantic")
-            client = _client(payload)
-            if strategy == "semantic":
-                entries = client.query(query, top_k=top_k, enable_hybrid_search=True)
-            else:
-                entries = client.advance_query(query, top_k=top_k, query_type=strategy)
-            _json_out({"ok": True, "entries": [_entry_to_dict(e) for e in entries]})
-
-        if action == "list":
-            limit = int(payload.get("limit") or 20)
-            entries = _client(payload).list_memories(limit=limit)
-            _json_out({"ok": True, "entries": [_entry_to_dict(e) for e in entries]})
-
-        if action == "delete":
-            key = str(payload.get("key") or "").strip()
-            if not key:
-                _json_out({"ok": False, "error": "No key provided."}, code=1)
-            _client(payload).delete(key)
-            _json_out({"ok": True})
-
-        if action == "clear":
-            if payload.get("confirm") != "clear":
-                _json_out({"ok": False, "error": "Refusing to clear without confirm='clear'."}, code=1)
-            _client(payload).clear()
-            _json_out({"ok": True})
-
-        _json_out({"ok": False, "error": f"Unknown action: {action}"}, code=1)
-    except SystemExit:
-        raise
-    except Exception as exc:  # pragma: no cover - integration diagnostics
-        payload = {"ok": False, "error": str(exc)}
-        _json_out(payload, code=1)
+def status(payload: dict[str, Any]) -> dict[str, Any]:
+    client = _client(payload)
+    return {
+        "ok": True,
+        "user_id": _scope_id(payload),
+        "count": client.count(),
+        "home": str(_default_home()),
+    }
 
 
-if __name__ == "__main__":
-    main()
+def remember(payload: dict[str, Any]) -> dict[str, Any]:
+    text = str(payload.get("text") or "").strip()
+    if not text:
+        return {"ok": False, "error": "No text provided."}
+    entries = _client(payload).add(text, type=str(payload.get("type") or "doc"), metadata=_metadata(payload))
+    return {"ok": True, "stored": len(entries), "entries": [_entry_to_dict(entry) for entry in entries]}
+
+
+def recall(payload: dict[str, Any]) -> dict[str, Any]:
+    query = str(payload.get("query") or "").strip()
+    if not query:
+        return {"ok": False, "error": "No query provided."}
+    top_k = int(payload.get("top_k") or os.getenv("PI_MEMORA_TOP_K", "5"))
+    strategy = str(payload.get("strategy") or "semantic")
+    client = _client(payload)
+    if strategy == "semantic":
+        entries = client.query(query, top_k=top_k, enable_hybrid_search=True)
+    else:
+        entries = client.advance_query(query, top_k=top_k, query_type=strategy)
+    return {"ok": True, "entries": [_entry_to_dict(entry) for entry in entries]}
+
+
+def list_memories(payload: dict[str, Any]) -> dict[str, Any]:
+    limit = int(payload.get("limit") or 20)
+    entries = _client(payload).list_memories(limit=limit)
+    return {"ok": True, "entries": [_entry_to_dict(entry) for entry in entries]}
+
+
+def delete_memory(payload: dict[str, Any]) -> dict[str, Any]:
+    key = str(payload.get("key") or "").strip()
+    if not key:
+        return {"ok": False, "error": "No key provided."}
+    _client(payload).delete(key)
+    return {"ok": True}
+
+
+def clear_memories(payload: dict[str, Any]) -> dict[str, Any]:
+    if payload.get("confirm") != "clear":
+        return {"ok": False, "error": "Refusing to clear without confirm='clear'."}
+    _client(payload).clear()
+    return {"ok": True}
+
+
+def setup_instructions() -> dict[str, Any]:
+    return {
+        "ok": False,
+        "error": "Memora checkout is missing or incomplete.",
+        "setup": _setup_commands(),
+    }
+
+
+def run_action(action: str, payload: dict[str, Any]) -> dict[str, Any]:
+    if action == "missing-setup":
+        return setup_instructions()
+    if action == "doctor":
+        return status(payload)
+    if action == "add":
+        return remember(payload)
+    if action == "query":
+        return recall(payload)
+    if action == "list":
+        return list_memories(payload)
+    if action == "delete":
+        return delete_memory(payload)
+    if action == "clear":
+        return clear_memories(payload)
+    return {"ok": False, "error": f"Unknown action: {action}"}

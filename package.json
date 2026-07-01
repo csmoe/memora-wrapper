@@ -1,13 +1,14 @@
 {
   "name": "pi-memora",
-  "version": "1.0.3",
-  "description": "Memora-backed persistent memory extension for the Pi coding agent.",
-  "main": "extensions/memora.ts",
+  "version": "1.0.4",
+  "description": "Memora-backed persistent memory for Pi and Codex via MCP.",
+  "main": "pi/memora.ts",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "bridge:doctor": "uv run --project . python bridge/pi_memora_bridge.py doctor '{}'",
-    "bridge:smoke": "uv run --project . python -m py_compile bridge/pi_memora_bridge.py && (uv run --project . python bridge/pi_memora_bridge.py doctor '{}' || test $? -eq 2)",
-    "test": "npm run typecheck && npm run bridge:smoke"
+    "bridge:doctor": "uv run --project . python src/memora_bridge.py doctor '{}'",
+    "mcp:smoke": "uv run --project . python -m py_compile src/memora_core.py src/memora_mcp.py src/memora_mcp_call.py src/memora_bridge.py && uv run --project . python src/memora_mcp.py --self-test",
+    "bridge:smoke": "uv run --project . python src/memora_bridge.py doctor '{}'",
+    "test": "npm run typecheck && npm run mcp:smoke && npm run bridge:smoke"
   },
   "keywords": [
     "pi-package",
@@ -22,9 +23,12 @@
     "node": ">=20"
   },
   "files": [
-    "extensions/*.ts",
-    "bridge/*.py",
+    "pi/*.ts",
+    "src/*.py",
+    "vendor/Memora/src/**",
+    "vendor/Memora/LICENSE",
     "pyproject.toml",
+    "uv.lock",
     "README.md",
     "CHANGELOG.md",
     "SECURITY.md",
@@ -32,7 +36,7 @@
   ],
   "pi": {
     "extensions": [
-      "./extensions"
+      "./pi"
     ]
   },
   "peerDependencies": {

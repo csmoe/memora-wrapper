@@ -1,7 +1,12 @@
 __pycache__/
 *.py[cod]
 node_modules/
-vendor/
+vendor/*
+!vendor/Memora/
+vendor/Memora/*
+!vendor/Memora/LICENSE
+!vendor/Memora/src/
+!vendor/Memora/src/**
 .DS_Store
 .git/
 .pi/

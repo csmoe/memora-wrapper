@@ -1,19 +1,21 @@
-# pi-memora
+# memora-wrapper
 
-Persistent memory for the [Pi coding agent](https://pi.dev), backed by [Microsoft Memora](https://github.com/microsoft/Memora).
+Persistent memory for [Pi](https://pi.dev) and Codex-compatible MCP clients, backed by [Microsoft Memora](https://github.com/microsoft/Memora).
 
-`pi-memora` is a Pi extension package. It adds memory tools, recalls relevant memories into the current turn, and can capture finished turns back into Memora. OpenAI chat models use native structured parsing; DeepSeek and other OpenAI-compatible chat providers use JSON mode with schema validation.
+`memora-wrapper` exposes one Python MCP server and uses it everywhere. The Pi extension calls the MCP tools through a local stdio MCP client shim; Codex can connect to the same MCP server directly. OpenAI chat models use native structured parsing; DeepSeek and other OpenAI-compatible chat providers use JSON mode with schema validation.
 
 ## What It Adds
 
-- `/memora` command for status, setup, recall, remember, list, and clear.
+- MCP server: `src/memora_mcp.py`.
+- Pi extension commands: `/memora status`, `/memora setup`, `/memora recall`, `/memora remember`, `/memora list`, and `/memora clear`.
 - `memora_remember` tool for durable facts, decisions, preferences, and task outcomes.
 - `memora_recall` tool for semantic memory lookup.
 - `memora_list` tool for inspecting stored memories.
+- `memora_delete` and `memora_clear` maintenance tools over MCP.
 - Optional automatic recall before each prompt.
 - Optional automatic capture after each agent run.
 
-The bridge is a uv project. Its Python dependencies live in `pyproject.toml`; it does not install Memora's full benchmark, RL, or local-Hugging-Face dependency set.
+The MCP runtime is a uv project. Its Python dependencies live in `pyproject.toml`; it does not install Memora's full benchmark, RL, or local-Hugging-Face dependency set.
 
 ## Install
 
@@ -32,7 +34,7 @@ pi install npm:pi-memora -l
 Local checkout:
 
 ```bash
-pi install /path/to/pi-memora
+pi install /path/to/memora-wrapper
 ```
 
 One-session trial:
@@ -43,11 +45,25 @@ pi -e npm:pi-memora
 
 If Pi is already running after installation, run `/reload` or start a new Pi session.
 
-After installation, `/memora status` reports whether the Memora runtime is ready. `/memora setup` installs the pinned Memora runtime under the installed package path.
+After installation, `/memora status` reports whether the Memora runtime is ready. `/memora setup` prepares the uv runtime and verifies the bundled Memora source.
 
-## Before Launching Pi
+## Codex MCP
 
-Set the embedding provider environment in the same shell before starting Pi. The extension does not read env files or edit shell startup files.
+Configure Codex with an MCP server that launches this package:
+
+```toml
+[mcp_servers.memora-wrapper]
+command = "uv"
+args = ["run", "--project", "/path/to/memora-wrapper", "python", "/path/to/memora-wrapper/src/memora_mcp.py"]
+```
+
+The server exposes `memora_status`, `memora_setup_instructions`, `memora_remember`, `memora_recall`, `memora_list`, `memora_delete`, and `memora_clear`.
+
+Codex does not automatically capture every turn from MCP alone. Ask Codex to call `memora_remember`, or add Codex instructions that tell it when to use the memory tools.
+
+## Before Launching
+
+Set the embedding provider environment in the same shell before starting Pi or launching the Codex MCP server. The package does not read env files or edit shell startup files.
 
 Required:
 
@@ -55,10 +71,12 @@ Required:
 - An embedding API key, unless the embedding provider can use the same credential Pi already uses for the active model.
 - An embedding base URL when the provider is not OpenAI's default API.
 
-Then start Pi from that shell:
+Then start Pi or the MCP server from that shell:
 
 ```bash
 pi
+# or
+uv run --project /path/to/memora-wrapper python /path/to/memora-wrapper/src/memora_mcp.py
 ```
 
 After Pi starts, run:
@@ -97,7 +115,7 @@ export AZURE_OPENAI_API_VERSION=2024-12-01-preview
 export AZURE_OPENAI_EMBEDDING_DEPLOYMENT=text-embedding-3-small
 ```
 
-## Usage
+## Pi Usage
 
 ```text
 /memora status
@@ -114,7 +132,7 @@ The model may also call `memora_remember`, `memora_recall`, and `memora_list` di
 
 Package-specific environment variables:
 
-- `PI_MEMORA_HOME`: memory data root. Defaults to `${XDG_DATA_HOME:-$HOME/.local/share}/pi-memora`.
+- `PI_MEMORA_HOME`: memory data root. Defaults to `${XDG_DATA_HOME:-$HOME/.local/share}/memora-wrapper`.
 - `PI_MEMORA_SCOPE`: `project` or `global`. Defaults to `project`.
 - `PI_MEMORA_AUTORECALL`: set to `0` to disable automatic recall.
 - `PI_MEMORA_AUTOCAPTURE`: set to `0` to disable automatic capture.
@@ -128,7 +146,7 @@ Provider-native variables such as `AZURE_OPENAI_ENDPOINT` are still used for pro
 ## Data And Safety
 
 - Memory data is stored under `PI_MEMORA_HOME`.
-- Memora source is checked out under `vendor/Memora` inside the installed package.
+- Memora source is vendored under `vendor/Memora` inside the installed package.
 - The extension does not read env files or write shell configuration.
 - Rotate any API key pasted into chat, logs, issue trackers, or support requests.
 - Disable autocapture with `PI_MEMORA_AUTOCAPTURE=0` when working with secrets or private data.
