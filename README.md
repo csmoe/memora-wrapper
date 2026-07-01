@@ -2,7 +2,7 @@
 
 Persistent memory for the [Pi coding agent](https://pi.dev), backed by [Microsoft Memora](https://github.com/microsoft/Memora).
 
-`pi-memora` is a Pi extension package. It adds memory tools, recalls relevant memories into the current turn, and can capture finished turns back into Memora.
+`pi-memora` is a Pi extension package. It adds memory tools, recalls relevant memories into the current turn, and can capture finished turns back into Memora. OpenAI chat models use native structured parsing; DeepSeek and other OpenAI-compatible chat providers use JSON mode with schema validation.
 
 ## What It Adds
 
@@ -70,7 +70,7 @@ After Pi starts, run:
 
 ## Provider Setup
 
-Memora's chat/extraction calls use Pi's active OpenAI-compatible model and Pi's resolved model auth. Only configure embeddings here.
+Memora's chat/extraction calls use Pi's active OpenAI-compatible model and Pi's resolved model auth. OpenAI uses native structured parsing; DeepSeek and other compatible providers use JSON mode with schema validation. Only configure embeddings here.
 
 OpenAI:
 

@@ -13,6 +13,8 @@ from importlib.machinery import ModuleSpec
 from pathlib import Path
 from typing import Any
 
+STRUCTURED_OUTPUT_RETRIES = 2
+
 
 def _json_out(payload: dict[str, Any], code: int = 0) -> None:
     print(json.dumps(payload, ensure_ascii=False))
@@ -63,6 +65,112 @@ def _openai_compat_api_key(kind: str) -> str | None:
     return os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY")
 
 
+def _chat_provider(model: str, base_url: str | None) -> str:
+    normalized_model = model.lower()
+    normalized_base_url = (base_url or "").lower()
+    if "deepseek" in normalized_model or "api.deepseek.com" in normalized_base_url:
+        return "deepseek"
+    if not normalized_base_url or "api.openai.com" in normalized_base_url:
+        return "openai"
+    return "openai-compatible"
+
+
+def _clean_json_response(text: str) -> str:
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        stripped = "\n".join(lines).strip()
+
+    object_start = stripped.find("{")
+    object_end = stripped.rfind("}")
+    array_start = stripped.find("[")
+    array_end = stripped.rfind("]")
+
+    if object_start != -1 and object_end > object_start:
+        return stripped[object_start : object_end + 1]
+    if array_start != -1 and array_end > array_start:
+        return stripped[array_start : array_end + 1]
+    return stripped
+
+
+def _schema_instruction(response_format: Any) -> str:
+    schema = {}
+    if hasattr(response_format, "model_json_schema"):
+        schema = response_format.model_json_schema()
+    elif hasattr(response_format, "schema"):
+        schema = response_format.schema()
+    return (
+        "Return only valid JSON. Do not wrap it in markdown. "
+        "Use exactly the field names from the schema. "
+        "The JSON must match this schema: "
+        f"{json.dumps(schema, ensure_ascii=False)}"
+    )
+
+
+def _coerce_memory_outputs(response_format: Any, data: Any) -> Any:
+    if getattr(response_format, "__name__", "") != "MemoryOutputs" or not isinstance(data, dict):
+        return data
+    if "entries" in data:
+        return data
+
+    candidates = data.get("memories") or data.get("memory") or data.get("items")
+    if not isinstance(candidates, list):
+        candidates = [data]
+
+    entries = []
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        index = item.get("index") or item.get("MemIndex") or item.get("key") or item.get("title")
+        value = item.get("value") or item.get("Memory") or item.get("MemValue") or item.get("content") or item.get("text")
+        if index and value:
+            entries.append(
+                {
+                    "memory_type": item.get("memory_type") or item.get("type") or "Factual",
+                    "index": str(index),
+                    "value": str(value),
+                }
+            )
+
+    return {"entries": entries} if entries else data
+
+
+def _parse_structured_response(response_format: Any, text: str) -> Any:
+    cleaned = _clean_json_response(text)
+    data = json.loads(cleaned)
+    return _validate_structured_data(response_format, data)
+
+
+def _parse_tolerant_structured_response(response_format: Any, text: str) -> Any:
+    cleaned = _clean_json_response(text)
+    data = json.loads(cleaned)
+    data = _coerce_memory_outputs(response_format, data)
+    return _validate_structured_data(response_format, data)
+
+
+def _validate_structured_data(response_format: Any, data: Any) -> Any:
+    if hasattr(response_format, "model_validate"):
+        return response_format.model_validate(data)
+    if hasattr(response_format, "parse_obj"):
+        return response_format.parse_obj(data)
+    if hasattr(response_format, "model_validate_json"):
+        return response_format.model_validate_json(json.dumps(data, ensure_ascii=False))
+    if hasattr(response_format, "parse_raw"):
+        return response_format.parse_raw(json.dumps(data, ensure_ascii=False))
+    return data
+
+
+def _structured_messages(messages: list, response_format: Any, error: str | None = None) -> list:
+    instruction = _schema_instruction(response_format)
+    if error:
+        instruction += f" Previous JSON failed validation with this error: {error}. Return corrected JSON only."
+    return [{"role": "system", "content": instruction}, *messages]
+
+
 def _apply_openai_compat_patches() -> None:
     from openai import OpenAI
     import memora.utils.embedding as embedding_utils
@@ -93,11 +201,64 @@ def _apply_openai_compat_patches() -> None:
 
     llm_utils.ChatCompletionModel._determine_model_type = lambda self, model_name: "openai"
 
-    original_invoke_openai = llm_utils.ChatCompletionModel._invoke_azure
+    def invoke_openai_native(self, request, response_format):
+        if response_format:
+            response = self.client.beta.chat.completions.parse(
+                **request,
+                response_format=response_format,
+            )
+            return response.choices[0].message.parsed
+        response = self.client.chat.completions.create(**request)
+        return response.choices[0].message.content or ""
+
+    def invoke_json_mode(self, request, response_format):
+        if not response_format:
+            response = self.client.chat.completions.create(**request)
+            return response.choices[0].message.content or ""
+
+        last_error: Exception | None = None
+        last_content = ""
+        for attempt in range(STRUCTURED_OUTPUT_RETRIES + 1):
+            structured_request = {
+                **request,
+                "messages": _structured_messages(
+                    request["messages"],
+                    response_format,
+                    str(last_error) if last_error else None,
+                ),
+            }
+            try:
+                response = self.client.chat.completions.create(
+                    **structured_request,
+                    response_format={"type": "json_object"},
+                )
+            except Exception:
+                response = self.client.chat.completions.create(**structured_request)
+
+            last_content = response.choices[0].message.content or ""
+            try:
+                return _parse_structured_response(response_format, last_content)
+            except Exception as exc:
+                last_error = exc
+                if attempt >= STRUCTURED_OUTPUT_RETRIES:
+                    return _parse_tolerant_structured_response(response_format, last_content)
+
+        raise last_error or ValueError("Structured output parsing failed.")
 
     def invoke_openai_compat(self, messages, response_format, source, **kwargs):
         kwargs.setdefault("max_tokens", 2048)
-        return original_invoke_openai(self, messages, response_format, source, **kwargs)
+        base_url = self.cfg.openai.get("llm_api_base", None) or _openai_compat_base_url("LLM")
+        request = {
+            "messages": messages,
+            "model": self.cfg.llm.model,
+            "seed": self.cfg.llm.get("seed", 42),
+            **kwargs,
+        }
+
+        provider = _chat_provider(str(self.cfg.llm.model), base_url)
+        if provider == "openai":
+            return invoke_openai_native(self, request, response_format)
+        return invoke_json_mode(self, request, response_format)
 
     llm_utils.ChatCompletionModel._invoke_azure = invoke_openai_compat
 
